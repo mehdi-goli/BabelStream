@@ -170,8 +170,7 @@ void SYCLStream<T>::triad()
   });
   queue->wait();
 }
-
-template <class T>
+/*template <class T>
 T SYCLStream<T>::dot()
 {
   queue->submit([&](handler &cgh)
@@ -220,10 +219,43 @@ T SYCLStream<T>::dot()
       kOut[index] = wg_sum;
     });
   });
-  queue->wait();
+  queue->wait();*/
+  template <class T>
+  T SYCLStream<T>::dot()
+  {
+    queue->submit([&](handler &cgh)
+    {
+      auto ka   = d_a->template get_access<access::mode::read>(cgh);
+      auto kb   = d_b->template get_access<access::mode::read>(cgh);
+      auto ksum = d_sum->template get_access<access::mode::write>(cgh);
+
+      size_t N = array_size;
+      size_t temp_size = dot_num_groups;
+      cgh.parallel_for<dot_kernel>(p->get_kernel<dot_kernel>(),
+        range<1>(dot_num_groups*dot_wgsize), [=](item<1> item)
+        //nd_range<1>(dot_num_groups*dot_wgsize, dot_wgsize), [=](nd_item<1> item)
+      {
+        size_t index = item.get_id(0);
+        // for nd_range
+        //  auto index = item.get_global(0);
+        if(index == 0lu)
+        {
+          auto wg_sum = 0.0f;
+          for (size_t i = 0lu; i < N; i++)
+          {
+            wg_sum += (ka[i] * kb[i]);
+          }
+          ksum[0] = wg_sum;
+        } else if(index > 0ul && index < temp_size)
+        {
+          ksum[index] = 0.0f;
+        }
+      });
+    });
+    queue->wait();
   T sum = 0.0;
   auto h_sum = d_sum->template get_access<access::mode::read>();
-  for (int i = 0; i < dot_num_groups; i++)
+  for (size_t i = 0; i < dot_num_groups; i++)
   {
       sum += h_sum[i];
   }
