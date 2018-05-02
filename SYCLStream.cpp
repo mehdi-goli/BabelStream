@@ -82,6 +82,7 @@ SYCLStream<T>::SYCLStream(const unsigned int ARRAY_SIZE, const int device_index)
   d_b = new buffer<T>(array_size);
   d_c = new buffer<T>(array_size);
   d_sum = new buffer<T>(dot_num_groups);
+  d_sum_first = new buffer<T>(dot_num_groups*dot_wgsize);
 }
 
 template <class T>
@@ -91,9 +92,11 @@ SYCLStream<T>::~SYCLStream()
   delete d_b;
   delete d_c;
   delete d_sum;
+  delete d_sum_first;
 
   delete p;
   delete queue;
+  devices.clear();
 }
 
 template <class T>
@@ -175,41 +178,54 @@ T SYCLStream<T>::dot()
   {
     auto ka   = d_a->template get_access<access::mode::read>(cgh);
     auto kb   = d_b->template get_access<access::mode::read>(cgh);
-    auto ksum = d_sum->template get_access<access::mode::write>(cgh);
-
-    auto wg_sum = accessor<T, 1, access::mode::read_write, access::target::local>(range<1>(dot_wgsize), cgh);
+    auto ksum = d_sum_first->template get_access<access::mode::write>(cgh);
 
     size_t N = array_size;
+    size_t step = dot_num_groups*dot_wgsize;
 
     cgh.parallel_for<dot_kernel>(p->get_kernel<dot_kernel>(),
-      nd_range<1>(dot_num_groups*dot_wgsize, dot_wgsize), [=](nd_item<1> item)
+      range<1>(dot_num_groups*dot_wgsize), [=](item<1> item)
     {
-      size_t i = item.get_global(0);
-      size_t li = item.get_local(0);
-      size_t global_size = item.get_global_range()[0];
-
-      wg_sum[li] = 0.0;
-      for (; i < N; i += global_size)
-        wg_sum[li] += ka[i] * kb[i];
-
-      size_t local_size = item.get_local_range()[0];
-      for (int offset = local_size / 2; offset > 0; offset /= 2)
+      size_t index = item.get_id(0);
+      auto wg_sum = 0.0f;
+      //SIMD
+      for (size_t i = index; i < N; i+=step)
+      //CPU style
+  //    for (size_t i = index*step; i < N; i++)
       {
-        item.barrier(cl::sycl::access::fence_space::local_space);
-        if (li < offset)
-          wg_sum[li] += wg_sum[li + offset];
+        wg_sum += (ka[i] * kb[i]);
       }
-
-      if (li == 0)
-        ksum[item.get_group(0)] = wg_sum[0];
+      ksum[index] = wg_sum;
     });
   });
-
+  queue->wait();
+  queue->submit([&](handler &cgh)
+  {
+    auto kIn = d_sum_first->template get_access<access::mode::read>(cgh);
+    auto kOut = d_sum->template get_access<access::mode::write>(cgh);
+    size_t N = dot_num_groups * dot_wgsize;
+    size_t step = dot_num_groups;
+    cgh.parallel_for<dot_kernel_final>(p->get_kernel<dot_kernel_final>(),
+      range<1>(dot_num_groups), [=](item<1> item)
+    {
+      size_t index = item.get_id(0);
+      auto wg_sum = 0.0f;
+      //SIMD
+      for (size_t i = index; i < N; i+=step)
+      //CPU STYLE
+      //for (size_t i = index*step; i < N; i++)
+      {
+        wg_sum += kIn[i];
+      }
+      kOut[index] = wg_sum;
+    });
+  });
+  queue->wait();
   T sum = 0.0;
   auto h_sum = d_sum->template get_access<access::mode::read>();
   for (int i = 0; i < dot_num_groups; i++)
   {
-    sum += h_sum[i];
+      sum += h_sum[i];
   }
 
   return sum;

@@ -66,28 +66,18 @@ std::string kernels{R"CLC(
     global const TYPE * restrict a,
     global const TYPE * restrict b,
     global TYPE * restrict sum,
-    local TYPE * restrict wg_sum,
     int array_size)
   {
-    size_t i = get_global_id(0);
-    const size_t local_i = get_local_id(0);
-    wg_sum[local_i] = 0.0;
-    for (; i < array_size; i += get_global_size(0))
-      wg_sum[local_i] += a[i] * b[i];
-
-    for (int offset = get_local_size(0) / 2; offset > 0; offset /= 2)
-    {
-      barrier(CLK_LOCAL_MEM_FENCE);
-      if (local_i < offset)
-      {
-        wg_sum[local_i] += wg_sum[local_i+offset];
+    size_t index = get_global_id(0);
+    sum[index] = 0.0;
+    if(index == 0) {
+      TYPE p_sum = 0.0;
+      for (size_t i = 0; i < array_size; i++) {
+        p_sum += (a[i] * b[i]);
       }
+      sum[index] = p_sum;
     }
-
-    if (local_i == 0)
-      sum[get_group_id(0)] = wg_sum[local_i];
   }
-
 )CLC"};
 
 
@@ -157,7 +147,7 @@ OCLStream<T>::OCLStream(const unsigned int ARRAY_SIZE, const int device_index)
   mul_kernel = new cl::KernelFunctor<cl::Buffer, cl::Buffer>(program, "mul");
   add_kernel = new cl::KernelFunctor<cl::Buffer, cl::Buffer, cl::Buffer>(program, "add");
   triad_kernel = new cl::KernelFunctor<cl::Buffer, cl::Buffer, cl::Buffer>(program, "triad");
-  dot_kernel = new cl::KernelFunctor<cl::Buffer, cl::Buffer, cl::Buffer, cl::LocalSpaceArg, cl_int>(program, "stream_dot");
+  dot_kernel = new cl::KernelFunctor<cl::Buffer, cl::Buffer, cl::Buffer, cl_int>(program, "stream_dot");
 
   array_size = ARRAY_SIZE;
 
@@ -186,6 +176,7 @@ OCLStream<T>::~OCLStream()
   delete mul_kernel;
   delete add_kernel;
   delete triad_kernel;
+  devices.clear();
 }
 
 template <class T>
@@ -233,7 +224,7 @@ T OCLStream<T>::dot()
 {
   (*dot_kernel)(
     cl::EnqueueArgs(queue, cl::NDRange(dot_num_groups*dot_wgsize), cl::NDRange(dot_wgsize)),
-    d_a, d_b, d_sum, cl::Local(sizeof(T) * dot_wgsize), array_size
+    d_a, d_b, d_sum, array_size
   );
   cl::copy(queue, d_sum, sums.begin(), sums.end());
 
