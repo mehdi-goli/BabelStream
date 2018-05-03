@@ -69,12 +69,14 @@ std::string kernels{R"CLC(
     int array_size)
   {
     size_t index = get_global_id(0);
-    sum[index] = 0.0;
+    TYPE p_sum = 0.0;
     if(index == 0) {
-      TYPE p_sum = 0.0;
       for (size_t i = 0; i < array_size; i++) {
         p_sum += (a[i] * b[i]);
       }
+    }
+    if(index < (get_global_size(0) / get_local_size(0)))
+    {
       sum[index] = p_sum;
     }
   }
